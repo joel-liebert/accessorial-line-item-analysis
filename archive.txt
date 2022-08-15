@@ -1,0 +1,24 @@
+-- prove or vs and
+with big as (
+  select distinct(accessorial_charge_description) big
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  where accessorial_charge_description not like "%Fuel%"
+    or accessorial_charge_description not like "%FUEL%"
+    or accessorial_charge_description not like "%BASE"
+  order by accessorial_charge_description asc
+),
+small as (
+  select distinct(accessorial_charge_description) small
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  where accessorial_charge_description not like "%Fuel%"
+    and accessorial_charge_description not like "%FUEL%"
+    and accessorial_charge_description not like "%BASE"
+  order by accessorial_charge_description asc
+)
+
+select big.big
+, small.small
+from big
+full join small
+on big.big = small.small
+order by small
