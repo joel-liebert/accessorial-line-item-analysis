@@ -5,34 +5,29 @@ editor_options:
 title: Contract Rates - Accessorial Analysis
 ---
 
-# Packages
+# Load Packages
 
 ```{r, echo = f}
-
 library(bigrquery)
 library(DBI)
-library(dplyr)
-
+library(tidyverse)
+library(stats)
+library(ggfortify)
 ```
 
-# BQ connection
+# Create BQ connection
 
 ```{r}
-
 bqcon <- dbConnect(
   bigrquery::bigquery(),
   project = "freightwaves-data-science"
 )
-
 ```
 
-# BQ pull data
+# Pull data from BQ
 
 ```{r, echo = f}
-
-bj <- dbGetQuery(bqcon,
-                 
-  "with data as (
+query1 = "with data as (
     select
       cass_shipment_id
       ,ship_date
@@ -55,6 +50,7 @@ bj <- dbGetQuery(bqcon,
         else 'Cross-country'
         end as LOH
       ,case
+        when upper(accessorial_charge_description) like '%BASE%' then 'BASE CHARGE'
         when upper(accessorial_charge_description) like '%ENERGY%SUR%(FUEL%' then 'ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)'
         when upper(accessorial_charge_description) like '%ENERGY%CH%(FUEL%' then 'ENERGY CHARGE (FUEL ADJUSTMENT FACTOR)'
         when upper(accessorial_charge_description) like '%ENERGY%SUR%' then 'ENERGY SURCHARGE'
@@ -74,40 +70,62 @@ bj <- dbGetQuery(bqcon,
         end as accessorial_charge_description
       ,accessorial_charge_amount
       ,amount_paid
-      
+    
     from `freightwaves-data-factory.warehouse.beetlejuice`
-    where origin_country_code in ('USA', 'US') and
-      ship_date > '2022-05-01' and
-      (upper(accessorial_charge_description) like '%FUEL%'
-      or upper(accessorial_charge_description) like '%ENERGY%'
-      or upper(accessorial_charge_description) like '%BASE%')
+    
+    where (upper(accessorial_charge_description) like '%FUEL%'
+        or upper(accessorial_charge_description) like '%ENERGY%'
+        or upper(accessorial_charge_description) like '%BASE%')
   )
   
   select
     *
   from data
-  where mode in ('VAN', 'REEFER')
-    and ship_date > '2022-05-01'"
-    
-  )
+  where 
+    -- mode in ('VAN', 'REEFER') and
+    ship_date >= '2021-01-01' and
+    ship_date <= current_date"
 
+query2 <- "SELECT * FROM `freightwaves-data-science.dbt_jliebert.accessorial_analysis_query`"
+
+bj <- dbGetQuery(bqcon, query1)
 ```
 
-# Check most common accessorials
+# Check for most common accessorials
 
 ```{r, echo = F}
-
 accessorial_table <- bj %>% 
-  group_by(accessorial_charge_description, mode, system_type) %>% 
-  tally() %>% arrange(desc(n)) %>% 
-print(accessorial_table)
-
+  filter(accessorial_charge_description != "BASE CHARGE") %>%
+  group_by(accessorial_charge_description, mode) %>% 
+  tally() %>%
+  arrange(mode, desc(n)) %>%
+  print()
 ```
 
-# Create base charge column
+# Group by month and year
+```{r, echo = F}
+monyear_table <- bj %>% 
+  filter(ship_date <= "2022-09-15") %>%
+  filter(accessorial_charge_description %in% c("ENERGY CHARGE", 
+                                               "ENERGY SURCHARGE",
+                                               "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)",
+                                               "FUEL", "FUEL CHARGE", "FUEL SURCHARGE", "FUEL OTHER")) %>% 
+  group_by(year = lubridate::floor_date(ship_date, "year"),
+           month = lubridate::floor_date(ship_date, "month"),
+           accessorial_charge_description) %>% 
+  summarize(count = n()) %>% 
+  print()
+
+monyear_plot <- monyear_table %>% 
+  ggplot(aes(month, count, fill=accessorial_charge_description)) +
+  geom_line(aes(color=accessorial_charge_description)) +
+  theme_classic()
+monyear_plot
+```
+
+# Create base rate column
 
 ```{r, echo = F}
-
 base_total <- bj %>%
   group_by(cass_shipment_id) %>%
   filter(!grepl('BASE', accessorial_charge_description)) %>%
@@ -124,83 +142,210 @@ good_data <- all_data %>%
   mutate(lane = paste(origin_zip3, dest_zip3, sep = ':')) %>% 
   filter(base_rate > 0 & base_rate <= 5000 &
            total > 0 & total <= 10000)
-
 ```
 
-# Summary stats
+# Filter out lanes with < 3 carriers
 
 ```{r}
-
-
-  
-
-```
-
-
-
-
-
-
-
-
-#Variance by mode by lane for each 
-
-```{r, echo = F} 
-
-good_data <- all_data %>% 
-  mutate(lane = paste(origin_zip3, dest_zip3, sep = ':')) %>% 
-  filter(Base_Rate > 0 & Base_Rate <= 5000 &
-           Base_Fuel > 0 & Base_Fuel <= 10000 &
-           Base_Fuel_Targeted >= 0 & Base_Fuel_Targeted <= 20000) %>%
-  filter(fuel_total >= 0 & fuel_total <= 5000 &
-           other_total >= 0 & other_total <= 10000 &
-           targeted_total >= 0 & targeted_total <= 10000)
-
-volume_lanes <- good_data %>% mutate(week = strftime(ship_date, '%V%')) %>% group_by(mode, origin_zip3, dest_zip3, LOH, week) %>%
+volume_lanes <- good_data %>%
+  mutate(week = strftime(ship_date, '%V%')) %>%
+  group_by(mode, origin_zip3, dest_zip3, LOH, week) %>%
   summarize(Load_Count = n(), Carrier_Count = length(unique(shipper_master_code))) %>%
-  filter(Carrier_Count >= 3) %>% mutate(lane = paste(origin_zip3, dest_zip3, sep = ':'))
-
+  filter(Carrier_Count >= 3) %>%
+  mutate(lane = paste(origin_zip3, dest_zip3, sep = ':'))
 
 use_data <- good_data %>% filter(lane %in% volume_lanes$lane)
-
-var_df <- use_data %>%
-  group_by(mode, origin_zip3, dest_zip3, LOH) %>%
-  summarize(Var_Base = var(Base_Rate), 
-            Var_Base_Fuel = var(Base_Fuel),
-            Var_Base_Fuel_Targeted = var(Base_Fuel_Targeted),
-            Var_Total = var(total),
-            Count = n())
-
-#Average Lane Variance by mode w LOH
-med_var_df_LOH <- var_df %>% 
-  filter(Var_Base != 0 & Var_Base_Fuel != 0 & Var_Base_Fuel_Targeted != 0) %>% 
-  group_by(mode, LOH) %>%
-  summarize(`Lane Count` = n(), 
-            Med_Var_Base = median(Var_Base, na.rm = T), 
-            Med_Var_Base_Fuel = median(Var_Base_Fuel, na.rm = T),
-            Med_Var_Base_Fuel_Targeted = median(Var_Base_Fuel_Targeted, na.rm = T),
-            Med_Var_Total = median(Var_Total, na.rm = T)
-           ) %>% 
-  tidyr::pivot_longer(., cols = 4:ncol(.), names_to = 'Rate Type', values_to = 'Median Variance') %>%
-  mutate(`Median Variance` = scales::comma(`Median Variance`))
-
-med_var_df <- var_df %>% 
-  filter(Var_Base != 0 & Var_Base_Fuel != 0 & Var_Base_Fuel_Targeted != 0) %>% 
-  group_by(mode) %>%
-  summarize(`Lane Count` = n(), 
-            Med_Var_Base = median(Var_Base, na.rm = T), 
-            Med_Var_Base_Fuel = median(Var_Base_Fuel, na.rm = T),
-            Med_Var_Base_Fuel_Targeted = median(Var_Base_Fuel_Targeted, na.rm = T),
-            Med_Var_Total = median(Var_Total, na.rm = T)
-           ) %>% 
-  tidyr::pivot_longer(., cols = 3:ncol(.), names_to = 'Rate Type', values_to = 'Median Variance') %>%
-  mutate(`Median Variance` = scales::comma(`Median Variance`))
-
-print(med_var_df)
 ```
 
-
+# Create summary stats
 
 ```{r}
+stats_data <- use_data %>% 
+  group_by(accessorial_charge_description, mode, origin_zip3, dest_zip3, LOH) %>% 
+  summarize(min   = min(accessorial_charge_amount),
+            max   = max(accessorial_charge_amount),
+            avg   = mean(accessorial_charge_amount),
+            med   = median(accessorial_charge_amount),
+            var   = var(accessorial_charge_amount),
+            range = max(accessorial_charge_amount) - min(accessorial_charge_amount),
+            pct_of_base  = median(accessorial_charge_amount/base_rate),
+            pct_of_total = median(accessorial_charge_amount/amount_paid),
+            count = n()) %>% 
+  filter(!grepl('BASE CHARGE', accessorial_charge_description)) %>%
+  filter(is.na(origin_zip3) == FALSE & is.na(dest_zip3) == FALSE & var != 0) %>% 
+  ungroup() %>% 
+  mutate(cd_min = cume_dist(min),
+         cd_max = cume_dist(max),
+         cd_avg = cume_dist(avg),
+         cd_med = cume_dist(med),
+         cd_pct_of_base = cume_dist(pct_of_base),
+         cd_pct_of_total = cume_dist(pct_of_total),
+         ) %>%
+  # remove outliers
+  filter(cd_min >= 0.1 & cd_min <= 0.9 &
+         cd_max >= 0.1 & cd_max <= 0.9 &
+         cd_avg >= 0.1 & cd_avg <= 0.9 &
+         cd_med >= 0.1 & cd_med <= 0.9 &
+         cd_pct_of_base >= 0.1 & cd_pct_of_base <= 0.9 &
+         cd_pct_of_total >= 0.1 & cd_pct_of_total <= 0.9) %>% 
+#   filter(min >= 0 & min <= 2000 &
+#          max >= 0 & max <= 3000 &
+#          avg >= 0 & avg <= 2000 &
+#          med >= 0 & med <= 2000 &
+#          pct_of_base >= 0 & pct_of_base <= 5 &
+#          pct_of_total >= 0 & pct_of_total <= 1) %>% 
+  select(-c(cd_min, cd_max, cd_avg, cd_med, cd_pct_of_base, cd_pct_of_total)) %>% 
+  drop_na()
+```
+# Scale data
+
+```{r}
+# stats_data2 <- stats_data %>% 
+#   filter(mode %in% c("VAN", "REEFER"))
+
+scaled_data <- stats_data[,1:5] %>% 
+  cbind(scale(stats_data[,6:13]))
+```
+
+# Group the stats at different granularities
+
+```{r}
+stats_df <- scaled_data %>%
+  group_by(accessorial_charge_description) %>%
+  summarize(lane_count = n(),
+            med_min   = round(median(min), 2),
+            med_max   = round(median(max), 2),
+            med_avg   = round(median(avg), 2),
+            med_med   = round(median(med), 2),
+            med_pct_of_base = round(median(pct_of_base), 2),
+            med_pct_of_total = round(median(pct_of_total), 2),
+            med_range = round(median(range), 2),
+            med_var   = round(median(var), 2)
+           ) %>% 
+  arrange(accessorial_charge_description) %>%
+  filter(accessorial_charge_description %in% c("FUEL CHARGE",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               "FUEL SURCHARGE"))
+
+stats_plot <- stats_df[,-2] %>%
+  gather(stat, value, med_min:med_var) %>% 
+  ggplot(aes(stat, value, fill=accessorial_charge_description)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic()
+stats_plot
+
+
+stats_df_LOH <- scaled_data %>%
+  group_by(LOH, accessorial_charge_description) %>%
+  summarize(lane_count = n(),
+            med_min   = round(median(min), 2),
+            med_max   = round(median(max), 2),
+            med_avg   = round(median(avg), 2),
+            med_med   = round(median(med), 2),
+            med_pct_of_base = round(median(pct_of_base), 2),
+            med_pct_of_total = round(median(pct_of_total), 2),
+            med_range = round(median(range), 2),
+            med_var   = round(median(var), 2)
+           ) %>% 
+  arrange(LOH, accessorial_charge_description) %>% 
+  filter(accessorial_charge_description %in% c("FUEL CHARGE",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               "FUEL SURCHARGE"))
+
+stats_df_mode <- scaled_data %>%
+  group_by(mode, accessorial_charge_description) %>%
+  summarize(lane_count = n(),
+            med_min   = round(median(min), 2),
+            med_max   = round(median(max), 2),
+            med_avg   = round(median(avg), 2),
+            med_med   = round(median(med), 2),
+            med_pct_of_base = round(median(pct_of_base), 2),
+            med_pct_of_total = round(median(pct_of_total), 2),
+            med_range = round(median(range), 2),
+            med_var   = round(median(var), 2)
+           ) %>% 
+  arrange(mode, accessorial_charge_description) %>% 
+  filter(accessorial_charge_description %in% c("FUEL CHARGE",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               "FUEL SURCHARGE"))
+stats_df_mode_LOH <- scaled_data %>%
+  group_by(mode, LOH, accessorial_charge_description) %>%
+  summarize(lane_count = n(),
+            med_min   = round(median(min), 2),
+            med_max   = round(median(max), 2),
+            med_avg   = round(median(avg), 2),
+            med_med   = round(median(med), 2),
+            med_pct_of_base = round(median(pct_of_base), 2),
+            med_pct_of_total = round(median(pct_of_total), 2),
+            med_range = round(median(range), 2),
+            med_var   = round(median(var), 2)
+           ) %>% 
+  arrange(mode, accessorial_charge_description) %>% 
+  filter(accessorial_charge_description %in% c("FUEL CHARGE",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               "FUEL SURCHARGE"))
 
 ```
+
+# Elbow plot
+
+```{r}
+elbowplot <- function(data, nc=15, seed=123) {
+  elbow <- (nrow(data)-1) * sum(apply(data,2,var))
+  for (i in 2:nc) {
+    set.seed(seed)
+    elbow[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, elbow, type="b", xlab="Number of Clusters",
+       ylab="Within groups sum of squares")
+}
+
+elbowplot(scaled_data[6:13])
+```
+
+# Visualize Kmeans clustering
+
+```{r}
+km = kmeans(scaled_data[6:13], 4)
+autoplot(km, scaled_data, frame=TRUE)
+```
+
+# Identify which cluster each group is in
+
+```{r}
+find_mode <- function(x) {
+  u   <- unique(x)
+  tab <- tabulate(match(x, u))
+  u[tab == max(tab)]
+}
+
+clustered_data <- scaled_data %>% 
+  cbind(., closest_cluster=km$cluster) %>% 
+  group_by(accessorial_charge_description) %>%
+  mutate(cluster = find_mode(closest_cluster)) %>% 
+  distinct(accessorial_charge_description, cluster)
+
+print(clustered_data)
+
+```
+
+# Regression
+
+```{r}
+lm_fuelcharge <- use_data %>% 
+  filter(accessorial_charge_description == "FUEL CHARGE") %>% 
+  lm(formula = accessorial_charge_amount ~ factor(LOH), data = .)
+summary(lm_fuelcharge)
+```
+```{r}
+lm_fuelsurcharge <- use_data %>% 
+  filter(accessorial_charge_description == "FUEL SURCHARGE") %>% 
+  lm(formula = accessorial_charge_amount ~ factor(LOH), data = .)
+summary(lm_fuelsurcharge)
+```
+```{r}
+lm_stats_fuelsurcharge <- stats_data %>% 
+  filter(accessorial_charge_description == "FUEL SURCHARGE") %>% 
+  lm(formula = med ~ factor(LOH), data = .)
+summary(lm_stats_fuelsurcharge)
+```
+
