@@ -102,27 +102,6 @@ accessorial_table <- bj %>%
   print()
 ```
 
-# Group by month and year
-```{r, echo = F}
-monyear_table <- bj %>% 
-  filter(ship_date <= "2022-09-15") %>%
-  filter(accessorial_charge_description %in% c("ENERGY CHARGE", 
-                                               "ENERGY SURCHARGE",
-                                               "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)",
-                                               "FUEL", "FUEL CHARGE", "FUEL SURCHARGE", "FUEL OTHER")) %>% 
-  group_by(year = lubridate::floor_date(ship_date, "year"),
-           month = lubridate::floor_date(ship_date, "month"),
-           accessorial_charge_description) %>% 
-  summarize(count = n()) %>% 
-  print()
-
-monyear_plot <- monyear_table %>% 
-  ggplot(aes(month, count, fill=accessorial_charge_description)) +
-  geom_line(aes(color=accessorial_charge_description)) +
-  theme_classic()
-monyear_plot
-```
-
 # Create base rate column
 
 ```{r, echo = F}
@@ -156,6 +135,45 @@ volume_lanes <- good_data %>%
 
 use_data <- good_data %>% filter(lane %in% volume_lanes$lane)
 ```
+
+# Visualize cost per month
+```{r}
+monyear_table <- use_data %>% 
+  filter(ship_date <= "2022-09-15") %>%
+  filter(accessorial_charge_description %in% c("ENERGY CHARGE", 
+                                               "ENERGY SURCHARGE",
+                                               "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)",
+                                               "FUEL", "FUEL CHARGE", "FUEL SURCHARGE", "FUEL OTHER")) %>% 
+  group_by(year = lubridate::floor_date(ship_date, "year"),
+           month = lubridate::floor_date(ship_date, "month"),
+           accessorial_charge_description) %>% 
+  summarize(count = n(),
+            med_price = median(accessorial_charge_amount),
+            sum_price = sum(accessorial_charge_amount)) %>% 
+  print()
+
+monyear_count_plot <- monyear_table %>% 
+  ggplot(aes(month, count, fill=accessorial_charge_description)) +
+  geom_line(aes(color=accessorial_charge_description)) +
+  theme_classic() +
+  ggtitle("Count of charges across months")
+monyear_count_plot
+
+monyear_sum_plot <- monyear_table %>% 
+  ggplot(aes(month, sum_price, fill=accessorial_charge_description)) +
+  geom_line(aes(color=accessorial_charge_description)) +
+  theme_classic() +
+  ggtitle("Summed cost of charges across months")
+monyear_sum_plot
+
+monyear_price_plot <- monyear_table %>% 
+  ggplot(aes(month, med_price, fill=accessorial_charge_description)) +
+  geom_line(aes(color=accessorial_charge_description)) +
+  theme_classic() +
+  ggtitle("Average cost of charges across months")
+monyear_price_plot
+```
+
 
 # Create summary stats
 
@@ -224,18 +242,22 @@ stats_df <- scaled_data %>%
            ) %>% 
   arrange(accessorial_charge_description) %>%
   filter(accessorial_charge_description %in% c("FUEL CHARGE",
-                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL OTHER",
+                                               # "FUEL", 
                                                "FUEL SURCHARGE"))
 
 stats_plot <- stats_df[,-2] %>%
   gather(stat, value, med_min:med_var) %>% 
   ggplot(aes(stat, value, fill=accessorial_charge_description)) +
   geom_bar(stat="identity", position="dodge") +
-  theme_classic()
+  theme_classic() +
+  ggtitle("Scaled comparison of charge stats",
+          subtitle="These are negative values, so the larger the bar, the lower the value") +
+  coord_flip()
 stats_plot
 
 
-stats_df_LOH <- scaled_data %>%
+stats_df_LOH <- stats_data %>%
   group_by(LOH, accessorial_charge_description) %>%
   summarize(lane_count = n(),
             med_min   = round(median(min), 2),
@@ -249,10 +271,11 @@ stats_df_LOH <- scaled_data %>%
            ) %>% 
   arrange(LOH, accessorial_charge_description) %>% 
   filter(accessorial_charge_description %in% c("FUEL CHARGE",
-                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL OTHER",
+                                               # "FUEL", 
                                                "FUEL SURCHARGE"))
 
-stats_df_mode <- scaled_data %>%
+stats_df_mode <- stats_data %>%
   group_by(mode, accessorial_charge_description) %>%
   summarize(lane_count = n(),
             med_min   = round(median(min), 2),
@@ -266,9 +289,10 @@ stats_df_mode <- scaled_data %>%
            ) %>% 
   arrange(mode, accessorial_charge_description) %>% 
   filter(accessorial_charge_description %in% c("FUEL CHARGE",
-                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL OTHER",
+                                               # "FUEL", 
                                                "FUEL SURCHARGE"))
-stats_df_mode_LOH <- scaled_data %>%
+stats_df_mode_LOH <- stats_data %>%
   group_by(mode, LOH, accessorial_charge_description) %>%
   summarize(lane_count = n(),
             med_min   = round(median(min), 2),
@@ -282,7 +306,8 @@ stats_df_mode_LOH <- scaled_data %>%
            ) %>% 
   arrange(mode, accessorial_charge_description) %>% 
   filter(accessorial_charge_description %in% c("FUEL CHARGE",
-                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL", "FUEL OTHER",
+                                               # "ENERGY CHARGE", "ENERGY SURCHARGE", "ENERGY SURCHARGE (FUEL ADJUSTMENT FACTOR)", "FUEL OTHER",
+                                               # "FUEL", 
                                                "FUEL SURCHARGE"))
 
 ```
@@ -299,14 +324,18 @@ elbowplot <- function(data, nc=15, seed=123) {
        ylab="Within groups sum of squares")
 }
 
-elbowplot(scaled_data[6:13])
+kmeans_data <- scaled_data %>% 
+  filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>% 
+  .[2:9]
+
+elbowplot(kmeans_data)
 ```
 
 # Visualize Kmeans clustering
 
 ```{r}
-km = kmeans(scaled_data[6:13], 4)
-autoplot(km, scaled_data, frame=TRUE)
+km = kmeans(kmeans_data, 2)
+autoplot(km, kmeans_data, frame=TRUE) + ggtitle("KMeans cluster plot")
 ```
 
 # Identify which cluster each group is in
@@ -319,6 +348,7 @@ find_mode <- function(x) {
 }
 
 clustered_data <- scaled_data %>% 
+  filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>% 
   cbind(., closest_cluster=km$cluster) %>% 
   group_by(accessorial_charge_description) %>%
   mutate(cluster = find_mode(closest_cluster)) %>% 
@@ -329,6 +359,14 @@ print(clustered_data)
 ```
 
 # Regression
+
+```{r}
+lm_fuel <- use_data %>% 
+  filter(accessorial_charge_description == "FUEL") %>% 
+  lm(formula = accessorial_charge_amount ~ factor(LOH), data = .)
+summary(lm_fuel)
+```
+
 
 ```{r}
 lm_fuelcharge <- use_data %>% 
@@ -343,9 +381,9 @@ lm_fuelsurcharge <- use_data %>%
 summary(lm_fuelsurcharge)
 ```
 ```{r}
-lm_stats_fuelsurcharge <- stats_data %>% 
-  filter(accessorial_charge_description == "FUEL SURCHARGE") %>% 
-  lm(formula = med ~ factor(LOH), data = .)
-summary(lm_stats_fuelsurcharge)
+# lm_stats_fuelsurcharge <- stats_data %>% 
+#   filter(accessorial_charge_description == "FUEL SURCHARGE") %>% 
+#   lm(formula = med ~ factor(LOH), data = .)
+# summary(lm_stats_fuelsurcharge)
 ```
 
