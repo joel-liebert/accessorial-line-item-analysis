@@ -228,7 +228,7 @@ scaled_data <- stats_data[,1:5] %>%
 # Group the stats at different granularities
 
 ```{r}
-stats_df <- scaled_data %>%
+stats_df <- stats_data %>%
   group_by(accessorial_charge_description) %>%
   summarize(lane_count = n(),
             med_min   = round(median(min), 2),
@@ -246,14 +246,14 @@ stats_df <- scaled_data %>%
                                                # "FUEL", 
                                                "FUEL SURCHARGE"))
 
-stats_plot <- stats_df[,-2] %>%
-  gather(stat, value, med_min:med_var) %>% 
+stats_plot <- stats_df[,c(1,3:6)] %>%
+  gather(stat, value, med_min:med_med) %>% 
+  mutate(stat = factor(stat, levels=c("med_min", "med_avg", "med_med", "med_max"))) %>%
   ggplot(aes(stat, value, fill=accessorial_charge_description)) +
   geom_bar(stat="identity", position="dodge") +
   theme_classic() +
-  ggtitle("Scaled comparison of charge stats",
-          subtitle="These are negative values, so the larger the bar, the lower the value") +
-  coord_flip()
+  ggtitle("Comparison of charge stats") +
+  labs(y="charge amount in $")
 stats_plot
 
 
@@ -326,7 +326,7 @@ elbowplot <- function(data, nc=15, seed=123) {
 
 kmeans_data <- scaled_data %>% 
   filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>% 
-  .[2:9]
+  .[6:13]
 
 elbowplot(kmeans_data)
 ```
@@ -334,7 +334,7 @@ elbowplot(kmeans_data)
 # Visualize Kmeans clustering
 
 ```{r}
-km = kmeans(kmeans_data, 2)
+km = kmeans(kmeans_data, 4)
 autoplot(km, kmeans_data, frame=TRUE) + ggtitle("KMeans cluster plot")
 ```
 
@@ -380,10 +380,56 @@ lm_fuelsurcharge <- use_data %>%
   lm(formula = accessorial_charge_amount ~ factor(LOH), data = .)
 summary(lm_fuelsurcharge)
 ```
+
+# Distribution of Fuel Charge and Fuel Surcharge across shippers
+
 ```{r}
-# lm_stats_fuelsurcharge <- stats_data %>% 
-#   filter(accessorial_charge_description == "FUEL SURCHARGE") %>% 
-#   lm(formula = med ~ factor(LOH), data = .)
-# summary(lm_stats_fuelsurcharge)
+fuel_shipper_dist <- bj %>%
+  filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>% 
+  group_by(shipper_master_code, accessorial_charge_description) %>%
+  tally() %>%
+  filter(n > 100000) %>%
+  arrange(desc(n)) %>% 
+  print()
+
+fuel_shipper_dist_both <- fuel_shipper_dist %>% 
+  filter(shipper_master_code %in% c("1414", "1423", "1445", "1454", "1467"))
+
+fuel_shipper_dist_tally <- bj %>%
+  filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>%
+  group_by(accessorial_charge_description) %>%
+  summarize(count_distinct_shippercodes = n_distinct(shipper_master_code)) %>% 
+  print()
+```
+
+# Distribution of Fuel Charge and Fuel Surcharge across LOH
+
+```{r}
+fuel_LOH_dist <- bj %>%
+  filter(accessorial_charge_description %in% c("FUEL CHARGE", "FUEL SURCHARGE")) %>%
+  mutate(LOH = factor(LOH, levels=c("City", "Short", "Mid", "Tweener", "Long", "Extra-long", "Cross-country"))) %>%
+  group_by(LOH, accessorial_charge_description) %>%
+  tally() %>%
+  group_by(accessorial_charge_description) %>%
+  mutate(pct = round(n / sum(n), 3)) %>%
+  arrange(LOH) %>%
+  print()
+
+fuel_LOH_dist_plot_num <- fuel_LOH_dist %>%
+  ggplot(aes(LOH, n, fill=accessorial_charge_description)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic() +
+  coord_flip() +
+  ggtitle("Raw numbers")
+fuel_LOH_dist_plot_pct <- fuel_LOH_dist %>%
+  ggplot(aes(LOH, pct, fill=accessorial_charge_description)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic() +
+  # coord_flip() +
+  ggtitle("Distribution across LOH") +
+  ylab("% of total charge")
+  
+fuel_LOH_dist_plot_num
+fuel_LOH_dist_plot_pct
 ```
 
