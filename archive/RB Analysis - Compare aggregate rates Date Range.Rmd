@@ -17,7 +17,7 @@ bqcon <- dbConnect(
   project = "freightwaves-data-science"
 )
 
-bj <- dbGetQuery(bqcon, "Select *
+bj2 <- dbGetQuery(bqcon, "Select *
 From(
   select *, 
   case 
@@ -35,7 +35,7 @@ where mode in ('VAN', 'REEFER') and ship_date >= '2022-05-01'
 #Check most common accessorials
 
 ```{r, echo = F}
-accessorial_table <- bj %>% 
+accessorial_table <- bj2 %>% 
   mutate(system_type = toupper(system_type)) %>%
   group_by(accessorial_charge_description, mode, system_type) %>% 
   tally() %>% arrange(desc(n)) %>% 
@@ -45,7 +45,7 @@ print(accessorial_table)
 #Create base / fuel / accessorial individual line item charge columns
 
 ```{r, echo = F}
-base_total <- bj %>% filter(origin_country_code %in% c("USA", "US")) %>%
+base_total <- bj2 %>% filter(origin_country_code %in% c("USA", "US")) %>%
   mutate(LOH = cut(distance,
                    c(0,100, 250, 500, 750, 1000, 1500,10000),
                    labels = c('City', 'Short', 'Mid', 'Tweener', 'Long', 'Extra-Long', 'Cross Country'))) %>% 
@@ -56,19 +56,19 @@ base_total <- bj %>% filter(origin_country_code %in% c("USA", "US")) %>%
   mutate(Base_Rate = ifelse(is.na(Base_Rate), 0, Base_Rate))
 
 
-fuel_total <- bj %>% filter(origin_country_code %in% c("USA", "US")) %>% 
+fuel_total <- bj2 %>% filter(origin_country_code %in% c("USA", "US")) %>% 
   group_by(cass_shipment_id, mode, origin_postal_code, destination_postal_code) %>%
   filter(grepl('FUEL|ENERGY', accessorial_charge_description)) %>%
   summarize(fuel_total = sum(accessorial_charge_amount, na.rm=T)) %>%
   mutate(fuel_total = ifelse(fuel_total < 0, 0, fuel_total))
 
-other_total <- bj %>% filter(origin_country_code %in% c("USA", "US")) %>% 
+other_total <- bj2 %>% filter(origin_country_code %in% c("USA", "US")) %>% 
   group_by(cass_shipment_id, mode, origin_postal_code, destination_postal_code) %>%
   filter(!grepl('BASE|FUEL|ENERGY', accessorial_charge_description)) %>%
   summarize(other_total = sum(accessorial_charge_amount)) %>%
   mutate(other_total = ifelse(other_total < 0, 0, other_total))
 
-targeted_total <- bj %>% filter(origin_country_code %in% c("USA", "US")) %>% 
+targeted_total <- bj2 %>% filter(origin_country_code %in% c("USA", "US")) %>% 
   group_by(cass_shipment_id, mode, origin_postal_code, destination_postal_code) %>%
   filter(grepl('PICKUP|DELIVERY|LOADING|USED|TOLL|TAX|CUSTOMS|TAX|BORDER|COMPLIANCE|MANAGEMENT|MISCELL|DUTY|CARBON', accessorial_charge_description)) %>%
   summarize(targeted_total = sum(accessorial_charge_amount, na.rm=T))%>%
@@ -128,7 +128,8 @@ med_var_df_LOH <- var_df %>%
             Med_Var_Total = median(Var_Total, na.rm = T)
            ) %>% 
   tidyr::pivot_longer(., cols = 4:ncol(.), names_to = 'Rate Type', values_to = 'Median Variance') %>%
-  mutate(`Median Variance` = scales::comma(`Median Variance`))
+  mutate(`Median Variance` = round(`Median Variance`, 0)) %>%
+  arrange(mode, LOH, `Median Variance`)
 
 med_var_df <- var_df %>% 
   filter(Var_Base != 0 & Var_Base_Fuel != 0 & Var_Base_Fuel_Targeted != 0) %>% 
@@ -140,7 +141,7 @@ med_var_df <- var_df %>%
             Med_Var_Total = median(Var_Total, na.rm = T)
            ) %>% 
   tidyr::pivot_longer(., cols = 3:ncol(.), names_to = 'Rate Type', values_to = 'Median Variance') %>%
-  mutate(`Median Variance` = scales::comma(`Median Variance`))
+  mutate(`Median Variance` = round(`Median Variance`, 0))
 
 print(med_var_df)
 ```
@@ -148,5 +149,18 @@ print(med_var_df)
 
 
 ```{r}
-
+med_var_df_LOH_plot <- med_var_df_LOH %>% 
+  ggplot(aes(LOH, `Median Variance`, fill=`Rate Type`)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic()
+med_var_df_LOH_plot
 ```
+
+```{r}
+med_var_df_plot <- med_var_df %>% 
+  ggplot(aes(mode, `Median Variance`, fill=`Rate Type`)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic()
+med_var_df_plot
+```
+
