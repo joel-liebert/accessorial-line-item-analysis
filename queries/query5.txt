@@ -1,0 +1,56 @@
+with data as (
+  select
+    ship_date
+    ,cass_shipment_id
+    ,concat(substring(origin_postal_code, 1, 3), '-', substring(destination_postal_code, 1, 3)) as zip3_lane
+    ,distance
+    ,transportation_mode_description as mode
+    ,carrier_name
+    ,case
+      when upper(accessorial_charge_description) like '%FUEL%SUR%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%SUR%FUEL%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%FUEL%CH%' then 'FUEL CHARGE'
+      else 'OTHER'
+      end as accessorial_charge_description
+    ,accessorial_charge_amount
+    ,amount_paid
+    ,count(distinct accessorial_charge_description) over (partition by cass_shipment_id) as charge_count
+    ,count(distinct cass_shipment_id) over (partition by transportation_mode_description) as mode_count
+
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  
+  where (upper(accessorial_charge_description) like '%FUEL%SUR%'
+      or upper(accessorial_charge_description) like '%SUR%FUEL%'
+      or upper(accessorial_charge_description) like '%FUEL%CH%')
+    and origin_country_code in ('US', 'USA') and destination_country_code in ('US', 'USA')
+    and origin_state != 'CA' and destination_state != 'CA'
+    -- and transportation_mode_description = 'TRUCKLOAD (DRY VAN)'
+    and ship_date >= '2002-01-01' and ship_date < current_date
+    and distance is not null and distance > 25 and distance < 3300
+    and accessorial_charge_amount > 0
+    and amount_paid > 100
+)
+
+-- select
+--   accessorial_charge_description
+--   ,avg(accessorial_charge_amount) avg_cost
+-- from data
+-- group by accessorial_charge_description
+-- order by accessorial_charge_description
+
+select
+  mode
+  ,mode_count
+  ,max( if( accessorial_charge_description='FUEL CHARGE', avg_cost, NULL ) ) as avg_FC
+  ,max( if( accessorial_charge_description='FUEL SURCHARGE', avg_cost, NULL ) ) as avg_FSC
+from (select
+        mode
+        ,mode_count
+        ,accessorial_charge_description
+        ,round( avg(accessorial_charge_amount), 0) avg_cost
+      from data
+      -- where charge_count = 2
+        -- and accessorial_charge_description = 'FUEL CHARGE'
+      group by mode, mode_count, accessorial_charge_description)
+group by mode, mode_count
+order by mode_count desc

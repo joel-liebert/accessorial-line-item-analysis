@@ -1,0 +1,136 @@
+with data as (
+  select
+    ship_date
+    ,date_trunc(ship_date, month) as month
+    ,cass_shipment_id
+    ,concat(substring(origin_postal_code, 1, 3), '-', substring(destination_postal_code, 1, 3)) as zip3_lane
+    ,distance
+    ,transportation_mode_description as mode
+    ,carrier_name
+    ,case
+      when upper(accessorial_charge_description) like '%FUEL%SUR%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%SUR%FUEL%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%FUEL%CH%' then 'FUEL CHARGE'
+      else 'OTHER'
+      end as accessorial_charge_description
+    ,accessorial_charge_amount
+    ,amount_paid
+    ,count(distinct cass_shipment_id) over (partition by transportation_mode_description) as mode_count
+
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  
+  where (upper(accessorial_charge_description) like '%FUEL%SUR%'
+      or upper(accessorial_charge_description) like '%SUR%FUEL%'
+      or upper(accessorial_charge_description) like '%FUEL%CH%')
+    and upper(accessorial_charge_description) not like '%ENERGY%'
+    and origin_country_code in ('US', 'USA') and destination_country_code in ('US', 'USA')
+    and transportation_mode_description = 'TRUCKLOAD (DRY VAN)'
+    and ship_date < current_date
+    and distance is not null and distance > 25 and distance < 3300
+    and carrier_name is not null
+    -- and accessorial_charge_amount > 0
+    and amount_paid > 100
+),
+double_charge as (
+  select
+    *
+    ,count(distinct accessorial_charge_description) over (partition by cass_shipment_id) as charge_count
+  from data
+),
+single_charge_lanes as (
+  select
+    carrier_name
+    ,zip3_lane
+    ,count(distinct accessorial_charge_description) over (partition by carrier_name, zip3_lane) as double_charge
+    ,accessorial_charge_description
+    ,count(accessorial_charge_description) as charge_count
+  from double_charge
+  where charge_count != 2
+  group by carrier_name, zip3_lane, accessorial_charge_description
+),
+tall_data as (
+  select
+    carrier_name
+    ,zip3_lane
+    ,double_charge
+    ,max( if( accessorial_charge_description='FUEL CHARGE', charge_count, NULL ) ) as FC_count
+    ,max( if( accessorial_charge_description='FUEL SURCHARGE', charge_count, NULL ) ) as FSC_count
+  from single_charge_lanes
+  where double_charge = 2
+  group by carrier_name, zip3_lane, double_charge
+),
+joined_data as (
+  select
+    month
+    ,accessorial_charge_description
+    ,double_charge.carrier_name
+    ,double_charge.zip3_lane
+  from tall_data
+  left join double_charge
+    on double_charge.carrier_name = tall_data.carrier_name
+    and double_charge.zip3_lane = tall_data.zip3_lane
+  where charge_count != 2
+),
+investigate_lane as (
+  select
+    *
+  from double_charge
+  where charge_count != 2
+    and carrier_name = 'KOEMAN CONTRACTING'
+    -- and zip3_lane = '999-495'
+),
+investigate_lane_month as (
+  select
+    month
+    ,accessorial_charge_description
+    ,count(accessorial_charge_description) ct
+  from investigate_lane
+  group by month, accessorial_charge_description
+)
+
+-- select
+--   month
+--   ,max( if( accessorial_charge_description='FUEL CHARGE', ct, NULL ) ) as FC_count
+--   ,max( if( accessorial_charge_description='FUEL SURCHARGE', ct, NULL ) ) as FSC_count
+-- from (select
+--         month
+--         ,accessorial_charge_description
+--         ,count(accessorial_charge_description) ct
+--       from joined_data
+--       group by month, accessorial_charge_description)
+-- group by month
+-- order by month
+
+-- INVESTIGATE LANE BY DATE
+select
+  month
+  ,max( if( accessorial_charge_description='FUEL CHARGE', ct, NULL ) ) as FC_count
+  ,max( if( accessorial_charge_description='FUEL SURCHARGE', ct, NULL ) ) as FSC_count
+from investigate_lane_month
+group by month
+order by month
+
+
+-- -- AGGREGATE LANE
+-- select
+--   accessorial_charge_description
+--   ,round( avg( distance ), 0 ) as avg_miles
+--   ,round( avg( accessorial_charge_amount ), 0 ) as avg_charge_amount
+--   ,round( avg( amount_paid ), 0 ) as avg_amount_paid
+-- from investigate_lane
+-- group by accessorial_charge_description
+
+
+-- TOP DOUBLE CHARGE CARRIERS
+-- select * from tall_data
+-- where FC_count > 100 and FSC_count > 100
+-- order by FC_count desc, FSC_count desc
+
+
+-- -- CHARGES PER SHIPMENT
+-- select
+--   cass_shipment_id
+--   ,accessorial_charge_description
+-- from double_charge
+-- where charge_count = 2
+-- order by cass_shipment_id
