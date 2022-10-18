@@ -1,0 +1,76 @@
+with data as (
+  select
+    ship_date
+    ,cass_shipment_id
+    ,concat(substring(origin_postal_code, 1, 3), '-', substring(destination_postal_code, 1, 3)) as zip3_lane
+    ,concat(origin_state, '-', destination_state) as state_lane
+    ,transportation_mode_description as mode
+    ,distance
+    ,case
+      when distance < 100 then 'City'
+      when distance < 250 then 'Short'
+      when distance < 500 then 'Mid'
+      when distance < 750 then 'Tweener'
+      when distance < 1000 then 'Long'
+      when distance < 1500 then 'Extra-long'
+      else 'Cross-country'
+      end as LOH
+    ,carrier_name
+    ,case
+      when upper(accessorial_charge_description) like '%FUEL%SUR%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%SUR%FUEL%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%FUEL%CH%' then 'FUEL CHARGE'
+      else 'OTHER'
+      end as accessorial_charge_description
+    ,accessorial_charge_amount
+    ,amount_paid
+    ,billed_weight
+  
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  
+  where (upper(accessorial_charge_description) like '%FUEL%SUR%'
+      or upper(accessorial_charge_description) like '%SUR%FUEL%'
+      or upper(accessorial_charge_description) like '%FUEL%CH%')
+    and origin_state != 'CA' and destination_state != 'CA'
+    and origin_country_code in ('US', 'USA') and destination_country_code in ('US', 'USA')
+    and carrier_name is not null
+    -- and transportation_mode_description = 'TRUCKLOAD (TEMP-CONTROLLED)'
+    and ship_date >= '2000-01-01' and ship_date < current_date
+    and distance is not null and distance > 25 and distance < 3300
+    and accessorial_charge_amount > 0
+    and amount_paid > 100
+),
+count_data as (
+  select
+    *
+    ,count(distinct cass_shipment_id) over (partition by mode) as mode_count
+    ,count(distinct cass_shipment_id) over (partition by LOH) as LOH_count
+    ,count(distinct cass_shipment_id) over (partition by carrier_name) as carrier_count
+    ,count(distinct accessorial_charge_description) over (partition by cass_shipment_id) as charge_per_load
+  from data
+),
+tall_data as (
+  select
+    mode
+    ,mode_count
+    ,charge_per_load
+    ,count(distinct cass_shipment_id) as charge_per_load_count
+  from count_data
+  group by mode, mode_count, charge_per_load
+),
+wide_data as (
+  select
+    mode
+    ,mode_count
+    ,max( if( charge_per_load=1, charge_per_load_count, NULL) ) as one_charge
+    ,max( if( charge_per_load=2, charge_per_load_count, NULL) ) as two_charge
+  from tall_data
+  group by mode, mode_count
+)
+
+select
+  *
+  ,round( safe_divide(two_charge, one_charge)*100, 4 ) as ratio
+from wide_data
+where two_charge is not null
+order by safe_divide(two_charge, one_charge) desc

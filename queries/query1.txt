@@ -1,0 +1,84 @@
+with data as (
+  select
+    ship_date
+    ,cass_shipment_id
+    ,concat(substring(origin_postal_code, 1, 3), "-", substring(destination_postal_code, 1, 3)) as zip3_lane
+    ,concat(origin_state, "-", destination_state) as state_lane
+    ,case
+      when distance < 100 then 'City'
+      when distance < 250 then 'Short'
+      when distance < 500 then 'Mid'
+      when distance < 750 then 'Tweener'
+      when distance < 1000 then 'Long'
+      when distance < 1500 then 'Extra-long'
+      else 'Cross-country'
+      end as LOH
+    ,carrier_name
+    ,case 
+        when transportation_mode_description in ('TRUCKLOAD (DRY VAN)', 'TRUCKLOAD', 'MOTOR', 'BROKER') then 'VAN'
+        when transportation_mode_description = 'TRUCKLOAD (TEMP-CONTROLLED)'then 'REEFER'
+        else 'OTHER'
+        end as mode
+    ,case
+      when upper(accessorial_charge_description) like '%FUEL%SUR%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%SUR%FUEL%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%FUEL%CH%' then 'FUEL CHARGE'
+      else 'OTHER'
+      end as accessorial_charge_description
+    ,accessorial_charge_amount
+    ,amount_paid
+    ,billed_weight
+    ,count(*) over (partition by carrier_name) as carrier_count
+  
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  
+  where (upper(accessorial_charge_description) like '%FUEL%SUR%'
+      or upper(accessorial_charge_description) like '%SUR%FUEL%'
+      or upper(accessorial_charge_description) like '%FUEL%CH%')
+    and (transportation_mode_description = "LESS THAN TRUCKLOAD"
+      or transportation_mode_description = "TRUCKLOAD (DRY VAN)")
+    and accessorial_charge_amount > 0 and accessorial_charge_amount < 450
+    and amount_paid > 0 and amount_paid < 3100
+    and billed_weight < 50000
+    and ship_date >= "2021-01-01" and ship_date < current_date
+),
+filtered_data as (
+  select
+    *
+    ,count(distinct accessorial_charge_description) over (partition by carrier_name) as FC_FSC_count
+    ,count(*) over (partition by zip3_lane) as zip3_lane_count
+    ,count(*) over (partition by state_lane) as state_lane_count
+    ,count(*) over (partition by LOH) as LOH_count
+   from data
+  where mode in ("VAN", "REEFER")
+    and accessorial_charge_description in ("FUEL SURCHARGE", "FUEL CHARGE")
+),
+pct_data as (
+  select
+    LOH
+    ,LOH_count
+    ,accessorial_charge_description
+    ,round(avg(accessorial_charge_amount), 2) as avg_amount
+    ,round((avg(accessorial_charge_amount/amount_paid)*100), 0) as pct_of_total
+  from filtered_data
+  where FC_FSC_count = 2
+  group by LOH, LOH_count, accessorial_charge_description
+),
+wide_data as (
+  select
+    LOH
+    ,LOH_count
+    ,max( if( accessorial_charge_description="FUEL CHARGE", avg_amount, NULL ) ) as FC_avg_amount
+    ,max( if( accessorial_charge_description="FUEL SURCHARGE", avg_amount, NULL ) ) as FSC_avg_amount
+    ,max( if( accessorial_charge_description="FUEL CHARGE", pct_of_total, NULL ) ) as FC_pct
+    ,max( if( accessorial_charge_description="FUEL SURCHARGE", pct_of_total, NULL ) ) as FSC_pct
+  from pct_data
+  group by LOH, LOH_count
+)
+
+select
+  *
+  -- ,round( safe_subtract( FC_pct, FSC_pct ), 1 ) as diff
+from wide_data
+-- where state_lane_count > 10000
+order by LOH_count desc, LOH

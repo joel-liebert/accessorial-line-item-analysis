@@ -1,0 +1,71 @@
+with data as (
+  select
+    ship_date
+    ,date_trunc(ship_date, month) as month
+    ,cass_shipment_id
+    ,concat(substring(origin_postal_code, 1, 3), '-', substring(destination_postal_code, 1, 3)) as zip3_lane
+    ,case
+      when substring(origin_postal_code, 1, 1) in ('0', '1', '2') then 'Atlantic'
+      when substring(origin_postal_code, 1, 1) in ('3', '7') then 'South'
+      when substring(origin_postal_code, 1, 1) in ('4', '5', '6') then 'Midwest'
+      when substring(origin_postal_code, 1, 1) in ('8', '9') then 'West'
+      else 'N/A'
+      end as orig_region
+    ,case
+      when substring(destination_postal_code, 1, 1) in ('0', '1', '2') then 'Atlantic'
+      when substring(destination_postal_code, 1, 1) in ('3', '7') then 'South'
+      when substring(destination_postal_code, 1, 1) in ('4', '5', '6') then 'Midwest'
+      when substring(destination_postal_code, 1, 1) in ('8', '9') then 'West'
+      else 'N/A'
+      end as dest_region
+    ,distance
+    ,case
+      when distance < 100 then 'City (0-100)'
+      when distance < 250 then 'Short (100-250)'
+      when distance < 500 then 'Mid (250-500)'
+      when distance < 750 then 'Tweener (500-750)'
+      when distance < 1000 then 'Long (750-1000)'
+      else 'Extra-long (1000+)'
+      end as LOH
+    ,carrier_name
+    ,case
+      when upper(accessorial_charge_description) like '%FUEL%SUR%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%SUR%FUEL%' then 'FUEL SURCHARGE'
+      when upper(accessorial_charge_description) like '%FUEL%CH%' then 'FUEL CHARGE'
+      else 'OTHER'
+      end as accessorial_charge_description
+    ,accessorial_charge_amount
+    ,amount_paid
+    ,count(distinct accessorial_charge_description) over (partition by cass_shipment_id) as charge_count
+
+  from `freightwaves-data-factory.warehouse.beetlejuice`
+  
+  where (upper(accessorial_charge_description) like '%FUEL%SUR%'
+      or upper(accessorial_charge_description) like '%SUR%FUEL%'
+      or upper(accessorial_charge_description) like '%FUEL%CH%')
+    and origin_country_code in ('US', 'USA') and destination_country_code in ('US', 'USA')
+    and origin_state != 'CA' and destination_state != 'CA'
+    and transportation_mode_description = 'TRUCKLOAD (DRY VAN)'
+    and ship_date >= '2022-01-01' and ship_date < current_date
+    and distance is not null and distance > 25 and distance < 3300
+    and amount_paid > 100
+),
+load_data as (
+  select
+    cass_shipment_id
+    ,ship_date
+    ,month
+    ,orig_region
+    ,dest_region
+    ,zip3_lane
+    ,carrier_name
+    ,distance
+    ,LOH
+    ,if (charge_count=1, accessorial_charge_description, 'BOTH') as charge_type
+    ,sum(accessorial_charge_amount) as total_fuel
+    ,amount_paid
+  from data
+  group by cass_shipment_id, ship_date, month, orig_region, dest_region, zip3_lane, carrier_name, distance, LOH, amount_paid, charge_count, accessorial_charge_description
+)
+select * from load_data
+order by carrier_name, distance, cass_shipment_id
